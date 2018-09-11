@@ -14,6 +14,9 @@ public class GemmEngineParameters extends EngineParameters {
 	private static final String s_frequency       = "frequency";
 	private static final String s_tileSize        = "tileSize";
 	private static final String s_precision       = "precision";
+	private static final String s_useMax5         = "useMax5";
+	private static final String s_kernelCount     = "kernelCount";
+	private static final String s_slr             = "slr";
 
 	public GemmEngineParameters(String[] args) {
 		super(args);
@@ -26,6 +29,9 @@ public class GemmEngineParameters extends EngineParameters {
 		declareParam(s_frequency, DataType.INT, 150);
 		declareParam(s_tileSize, DataType.INT, 16);
 		declareParam(s_precision, Precision.class, Precision.DOUBLE);
+		declareParam(s_useMax5, DataType.BOOL, false);
+		declareParam(s_kernelCount, DataType.INT, 1);
+		declareParam(s_slr, DataType.BOOL, false);
 	}
 
 	@Override
@@ -62,10 +68,22 @@ public class GemmEngineParameters extends EngineParameters {
 		}
 	}
 
+	public boolean getUseMax5() {
+		return getParam(s_useMax5);
+	}
+
+	public int getKernelCount() {
+		return getParam(s_kernelCount);
+	}
+
+	public boolean getUseSlr() {
+		return getParam(s_slr);
+	}
+
 	@Override
 	public String getBuildName() {
 		return getMaxFileName()
 				+ "_" + getTarget() + "_" + getDFEModel().toString() + "_ss" + hasStreamStatus() + "_sf" + getFrequency()
-				+ "_ts" + getTileSize() + (getTag().isEmpty() ? "" : ("_" + getTag()));
+				+ "_ts" + getTileSize() + "_slr" + getUseSlr() + (getTag().isEmpty() ? "" : ("_" + getTag()));
 	}
 }

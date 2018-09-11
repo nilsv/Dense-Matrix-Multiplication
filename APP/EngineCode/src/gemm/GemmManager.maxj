@@ -2,6 +2,7 @@ package gemm;
 
 import maxpower.blas.l3.TileMultiplierKernel;
 
+import com.maxeler.maxcompiler.v2.kernelcompiler.Kernel;
 import com.maxeler.maxcompiler.v2.kernelcompiler._KernelConfiguration;
 import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFEType;
 import com.maxeler.maxcompiler.v2.managers.BuildConfig;
@@ -9,49 +10,134 @@ import com.maxeler.maxcompiler.v2.managers.BuildConfig.Effort;
 import com.maxeler.maxcompiler.v2.managers.BuildConfig.OptimizationTechnique;
 import com.maxeler.maxcompiler.v2.managers.custom.CustomManager;
 import com.maxeler.maxcompiler.v2.managers.custom.DFELink;
+import com.maxeler.maxcompiler.v2.managers.custom.blocks.KernelBlock;
 import com.maxeler.maxcompiler.v2.managers.custom.stdlib.DebugLevel;
+import com.maxeler.platform.max5.manager.ImplementationStrategy;
+import com.maxeler.platform.max5.manager.MAX5CManager;
 
-public class GemmManager extends CustomManager {
-	public GemmManager(GemmEngineParameters params) {
-		super(params);
-		configBuild(params);
+public class GemmManager {
+	
+	private static class GemmCustomManager extends CustomManager {
+		
+		private GemmCustomManager(GemmEngineParameters params) {
+			super(params);
+			configBuild(params);
+	
+			DFEType type = params.getFloatingPointType();
+	
+			int tileSize = params.getTileSize();
+	
+			addMaxFileConstant("tileSize", tileSize);
+			addMaxFileConstant("frequency", params.getFrequency());
+	
+			DFELink a = addStreamFromCPU("A");
+			DFELink b = addStreamFromCPU("B");
+	
+			addStreamToCPU("C") <== TileMultiplierKernel.multiplyTiles(this, "TM", type, tileSize, a, b);
+		}
+	
+		private void configBuild(GemmEngineParameters params) {
+			BuildConfig buildConfig = getBuildConfig();
+			buildConfig.setMPPRCostTableSearchRange(params.getMPPRStartCT(), params.getMPPREndCT());
+			buildConfig.setMPPRParallelism(params.getMPPRThreads());
+			buildConfig.setMPPRRetryNearMissesThreshold(params.getMPPRRetryThreshold());
+			buildConfig.setOptimizationGoal(OptimizationTechnique.AREA);
+			buildConfig.setBuildEffort(Effort.VERY_HIGH);
 
-		DFEType type = params.getFloatingPointType();
+			config.setDefaultStreamClockFrequency(params.getFrequency());
 
-		int tileSize = params.getTileSize();
+			setParameter("quartus_cdb.ram_usage", "10000");
+			setParameter("quartus_fit.ram_usage", "32000");
+			setParameter("quartus_sta.ram_usage", "24000");
 
-		addMaxFileConstant("tileSize", tileSize);
-		addMaxFileConstant("frequency", params.getFrequency());
+			DebugLevel dbg = new DebugLevel();
+			dbg.setHasStreamStatus(params.hasStreamStatus());
+			debug.setDebugLevel(dbg);
 
-		DFELink a = addStreamFromCPU("A");
-		DFELink b = addStreamFromCPU("B");
-
-		addStreamToCPU("C") <== TileMultiplierKernel.multiplyTiles(this, "TM", type, tileSize, a, b);
+			getCurrentKernelConfig().optimization.setConditionalArithmeticEnabled(true);
+			_KernelConfiguration.getPhotonKernelConfig(getCurrentKernelConfig()).optimizations().setBetterRegisteringEnabled(true);
+		}
+		
 	}
 
-	private void configBuild(GemmEngineParameters params) {
-		BuildConfig buildConfig = getBuildConfig();
-		buildConfig.setMPPRCostTableSearchRange(params.getMPPRStartCT(), params.getMPPREndCT());
-		buildConfig.setMPPRParallelism(params.getMPPRThreads());
-		buildConfig.setMPPRRetryNearMissesThreshold(params.getMPPRRetryThreshold());
-		buildConfig.setOptimizationGoal(OptimizationTechnique.AREA);
-		buildConfig.setBuildEffort(Effort.VERY_HIGH);
+	private static class GemmMax5CManager extends MAX5CManager {
+		
+		private GemmMax5CManager(GemmEngineParameters params) {
+			super(params);
+			getBuildConfig().setParallelism(params.getMPPRThreads());
+			getBuildConfig().setImplementationStrategies(ImplementationStrategy.MAXELER1, ImplementationStrategy.MAXELER2,
+					ImplementationStrategy.MAXELER3, ImplementationStrategy.MAXELER4);
+			setDefaultStreamClockFrequency(params.getFrequency());
+			setHasStreamStatus(params.hasStreamStatus());
 
-		config.setDefaultStreamClockFrequency(params.getFrequency());
+			getCurrentKernelConfig().optimization.setConditionalArithmeticEnabled(true);
+			_KernelConfiguration.getPhotonKernelConfig(getCurrentKernelConfig()).optimizations().setBetterRegisteringEnabled(true);
 
-		setParameter("quartus_cdb.ram_usage", "10000");
-		setParameter("quartus_fit.ram_usage", "32000");
-		setParameter("quartus_sta.ram_usage", "24000");
+			setAllowNonMultipleTransitions(true);
 
-		DebugLevel dbg = new DebugLevel();
-		dbg.setHasStreamStatus(params.hasStreamStatus());
-		debug.setDebugLevel(dbg);
+			DFEType type = Kernel.dfeUInt(18);
 
-		getCurrentKernelConfig().optimization.setConditionalArithmeticEnabled(true);
-		_KernelConfiguration.getPhotonKernelConfig(getCurrentKernelConfig()).optimizations().setBetterRegisteringEnabled(true);
+			int tileSize = params.getTileSize();
+
+			addMaxFileConstant("kernelCount", params.getKernelCount());
+			addMaxFileConstant("tileSize", tileSize);
+			addMaxFileConstant("frequency", params.getFrequency());
+
+			KernelBlock aSlicer = addKernel(new SlicerKernel(makeKernelParameters("SlicerA"), type, params.getKernelCount()));
+			KernelBlock bSlicer = addKernel(new SlicerKernel(makeKernelParameters("SlicerB"), type, params.getKernelCount()));
+			KernelBlock catter = addKernel(new CatterKernel(makeKernelParameters("Catter"), type, params.getKernelCount()));
+
+			DFELink aIn = addStreamFromCPU("A");
+			DFELink bIn = addStreamFromCPU("B");
+			aSlicer.getInput("input") <== aIn;
+			bSlicer.getInput("input") <== bIn;
+
+			for (int i = 0; i < params.getKernelCount(); i++) {
+				DFELink a = aSlicer.getOutput("output" + i);
+				DFELink b = bSlicer.getOutput("output" + i);
+				a.setAdditionalRegisters(2);
+				b.setAdditionalRegisters(2);
+
+				KernelBlock block = addKernel(new TileMultiplierKernel(makeKernelParameters("TM" + i), type, tileSize));
+				block.getInput("A") <== a;
+				block.getInput("B") <== b;
+				
+				if (params.getUseSlr()) {
+					assignToNamedRegion(block, getMax5CNamedRegion(i));
+				}
+	
+				DFELink c = block.getOutput("C");
+				c.setAdditionalRegisters(2);
+				catter.getInput("input" + i) <== c;
+			}
+
+			addStreamToCPU("C") <== catter.getOutput("output");
+		}
+		
+		private static MAX5CManager.NamedRegion getMax5CNamedRegion(int ik) {
+			MAX5CManager.NamedRegion site = MAX5CManager.NamedRegion.SLR1;
+			// use the central SLR, number 1, before the side ones.
+			switch ((ik + 1) % 3) {
+			case 0:
+				site = MAX5CManager.NamedRegion.SLR0;
+				break;
+			case 1:
+				site = MAX5CManager.NamedRegion.SLR1;
+				break;
+			case 2:
+				site = MAX5CManager.NamedRegion.SLR2;
+				break;
+			}
+			return site;
+		}
 	}
 
 	public static void main(String[] args) {
-		new GemmManager(new GemmEngineParameters(args)).build();
+		GemmEngineParameters params = new GemmEngineParameters(args);
+		if (params.getUseMax5()) {
+			new GemmMax5CManager(params).build();
+		} else {
+			new GemmCustomManager(params).build();
+		}
 	}
 }
